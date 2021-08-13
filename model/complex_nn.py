@@ -35,6 +35,7 @@ DCUnet 은 [batch, channel, H, W, 2 = real + imag] 인 반면에
 DCCRN 은 [batch, real+imag, ...] 식으로 진행되는 것 같음
 """
 # negative slope 가 hyperparam 인 LeakyReLU 와 다르게 slope 를 param으로 두어 학습 하게 함
+# 어차피 사용 X official 코드에서 nn.PReLU사용
 class cPReLU(nn.Module):
 
     def __init__(self, complex_axis=1):
@@ -247,12 +248,12 @@ class cBatchNorm2d(nn.Module):
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True,
                  track_running_stats=True, complex_axis=1):
         super(cBatchNorm2d, self).__init__()
-
         self.num_features = num_features // 2
         self.eps = eps
         self.momentum = momentum
         self.affine = affine
         self.track_running_stats = track_running_stats
+
         self.complex_axis = complex_axis
 
         if self.affine:
@@ -284,142 +285,140 @@ class cBatchNorm2d(nn.Module):
             self.register_parameter('num_batches_tracked', None)
         self.reset_parameters()
 
-        def reset_running_stats(self):
+    def reset_running_stats(self):
+        if self.track_running_stats:
+            self.RMr.zero_()
+            self.RMi.zero_()
+            self.RVrr.fill_(1)
+            self.RVri.zero_()
+            self.RVii.fill_(1)
+            self.num_batches_tracked.zero_()
+
+    def reset_parameters(self):
+        self.reset_running_stats()
+        if self.affine:
+            self.Br.data.zero_()
+            self.Bi.data.zero_()
+            self.Wrr.data.fill_(1)
+            self.Wri.data.uniform_(-.9, +.9)  # W will be positive-definite
+            self.Wii.data.fill_(1)
+
+    def _check_input_dim(self, xr, xi):
+        assert (xr.shape == xi.shape)
+        assert (xr.size(1) == self.num_features)
+
+    def forward(self, inputs):
+        # self._check_input_dim(xr, xi)
+
+        xr, xi = torch.chunk(inputs, 2, axis=self.complex_axis)
+        exponential_average_factor = 0.0
+
+        if self.training and self.track_running_stats:
+            self.num_batches_tracked += 1
+            if self.momentum is None:  # use cumulative moving average
+                exponential_average_factor = 1.0 / self.num_batches_tracked.item()
+            else:  # use exponential moving average
+                exponential_average_factor = self.momentum
+
+        #
+        # NOTE: The precise meaning of the "training flag" is:
+        #       True:  Normalize using batch   statistics, update running statistics
+        #              if they are being collected.
+        #       False: Normalize using running statistics, ignore batch   statistics.
+        #
+        training = self.training or not self.track_running_stats
+        redux = [i for i in reversed(range(xr.dim())) if i != 1]
+        vdim = [1] * xr.dim()
+        vdim[1] = xr.size(1)
+
+        #
+        # Mean M Computation and Centering
+        #
+        # Includes running mean update if training and running.
+        #
+        if training:
+            Mr, Mi = xr, xi
+            for d in redux:
+                Mr = Mr.mean(d, keepdim=True)
+                Mi = Mi.mean(d, keepdim=True)
             if self.track_running_stats:
-                self.RMr.zero_()
-                self.RMi.zero_()
-                self.RVrr.fill_(1)
-                self.RVri.zero_()
-                self.RVii.fill_(1)
-                self.num_batches_tracked.zero_()
+                self.RMr.lerp_(Mr.squeeze(), exponential_average_factor)
+                self.RMi.lerp_(Mi.squeeze(), exponential_average_factor)
+        else:
+            Mr = self.RMr.view(vdim)
+            Mi = self.RMi.view(vdim)
+        xr, xi = xr - Mr, xi - Mi
 
-        def reset_parameters(self):
-            self.reset_running_stats()
-            if self.affine:
-                self.Br.data.zero_()
-                self.Bi.data.zero_()
-                self.Wrr.data.fill_(1)
-                self.Wri.data.uniform_(-.9, +.9)  # W will be positive-definite
-                self.Wii.data.fill_(1)
+        #
+        # Variance Matrix V Computation
+        #
+        # Includes epsilon numerical stabilizer/Tikhonov regularizer.
+        # Includes running variance update if training and running.
+        #
+        if training:
+            Vrr = xr * xr
+            Vri = xr * xi
+            Vii = xi * xi
+            for d in redux:
+                Vrr = Vrr.mean(d, keepdim=True)
+                Vri = Vri.mean(d, keepdim=True)
+                Vii = Vii.mean(d, keepdim=True)
+            if self.track_running_stats:
+                self.RVrr.lerp_(Vrr.squeeze(), exponential_average_factor)
+                self.RVri.lerp_(Vri.squeeze(), exponential_average_factor)
+                self.RVii.lerp_(Vii.squeeze(), exponential_average_factor)
+        else:
+            Vrr = self.RVrr.view(vdim)
+            Vri = self.RVri.view(vdim)
+            Vii = self.RVii.view(vdim)
+        Vrr = Vrr + self.eps
+        Vri = Vri
+        Vii = Vii + self.eps
 
-        def _check_input_dim(self, xr, xi):
-            assert (xr.shape == xi.shape)
-            assert (xr.size(1) == self.num_features)
+        #
+        # Matrix Inverse Square Root U = V^-0.5
+        #
+        # sqrt of a 2x2 matrix,
+        # - https://en.wikipedia.org/wiki/Square_root_of_a_2_by_2_matrix
+        tau = Vrr + Vii
+        delta = torch.addcmul(Vrr * Vii, -1, Vri, Vri)
+        s = delta.sqrt()
+        t = (tau + 2 * s).sqrt()
 
-        def forward(self, inputs):
-            # self._check_input_dim(xr, xi)
+        # matrix inverse, http://mathworld.wolfram.com/MatrixInverse.html
+        rst = (s * t).reciprocal()
+        Urr = (s + Vii) * rst
+        Uii = (s + Vrr) * rst
+        Uri = (- Vri) * rst
 
-            xr, xi = torch.chunk(inputs, 2, axis=self.complex_axis)
-            exponential_average_factor = 0.0
+        #
+        # Optionally left-multiply U by affine weights W to produce combined
+        # weights Z, left-multiply the inputs by Z, then optionally bias them.
+        #
+        # y = Zx + B
+        # y = WUx + B
+        # y = [Wrr Wri][Urr Uri] [xr] + [Br]
+        #     [Wir Wii][Uir Uii] [xi]   [Bi]
+        #
+        if self.affine:
+            Wrr, Wri, Wii = self.Wrr.view(vdim), self.Wri.view(vdim), self.Wii.view(vdim)
+            Zrr = (Wrr * Urr) + (Wri * Uri)
+            Zri = (Wrr * Uri) + (Wri * Uii)
+            Zir = (Wri * Urr) + (Wii * Uri)
+            Zii = (Wri * Uri) + (Wii * Uii)
+        else:
+            Zrr, Zri, Zir, Zii = Urr, Uri, Uri, Uii
 
-            if self.training and self.track_running_stats:
-                self.num_batches_tracked += 1
-                if self.momentum is None:  # use cumulative moving average
-                    exponential_average_factor = 1.0 / self.num_batches_tracked.item()
-                else:  # use exponential moving average
-                    exponential_average_factor = self.momentum
+        yr = (Zrr * xr) + (Zri * xi)
+        yi = (Zir * xr) + (Zii * xi)
 
-            #
-            # NOTE: The precise meaning of the "training flag" is:
-            #       True:  Normalize using batch   statistics, update running statistics
-            #              if they are being collected.
-            #       False: Normalize using running statistics, ignore batch   statistics.
-            #
-            training = self.training or not self.track_running_stats
-            redux = [i for i in reversed(range(xr.dim())) if i != 1]
-            vdim = [1] * xr.dim()
-            vdim[1] = xr.size(1)
+        if self.affine:
+            yr = yr + self.Br.view(vdim)
+            yi = yi + self.Bi.view(vdim)
 
-            #
-            # Mean M Computation and Centering
-            #
-            # Includes running mean update if training and running.
-            #
-            if training:
-                Mr, Mi = xr, xi
-                for d in redux:
-                    Mr = Mr.mean(d, keepdim=True)
-                    Mi = Mi.mean(d, keepdim=True)
-                if self.track_running_stats:
-                    self.RMr.lerp_(Mr.squeeze(), exponential_average_factor)
-                    self.RMi.lerp_(Mi.squeeze(), exponential_average_factor)
-            else:
-                Mr = self.RMr.view(vdim)
-                Mi = self.RMi.view(vdim)
-            xr, xi = xr - Mr, xi - Mi
+        outputs = torch.cat([yr, yi], self.complex_axis)
+        return outputs
 
-            #
-            # Variance Matrix V Computation
-            #
-            # Includes epsilon numerical stabilizer/Tikhonov regularizer.
-            # Includes running variance update if training and running.
-            #
-            if training:
-                Vrr = xr * xr
-                Vri = xr * xi
-                Vii = xi * xi
-                for d in redux:
-                    Vrr = Vrr.mean(d, keepdim=True)
-                    Vri = Vri.mean(d, keepdim=True)
-                    Vii = Vii.mean(d, keepdim=True)
-                if self.track_running_stats:
-                    self.RVrr.lerp_(Vrr.squeeze(), exponential_average_factor)
-                    self.RVri.lerp_(Vri.squeeze(), exponential_average_factor)
-                    self.RVii.lerp_(Vii.squeeze(), exponential_average_factor)
-            else:
-                Vrr = self.RVrr.view(vdim)
-                Vri = self.RVri.view(vdim)
-                Vii = self.RVii.view(vdim)
-            Vrr = Vrr + self.eps
-            Vri = Vri
-            Vii = Vii + self.eps
-
-            #
-            # Matrix Inverse Square Root U = V^-0.5
-            #
-            # sqrt of a 2x2 matrix,
-            # - https://en.wikipedia.org/wiki/Square_root_of_a_2_by_2_matrix
-            tau = Vrr + Vii
-            delta = torch.addcmul(Vrr * Vii, -1, Vri, Vri)
-            s = delta.sqrt()
-            t = (tau + 2 * s).sqrt()
-
-            # matrix inverse, http://mathworld.wolfram.com/MatrixInverse.html
-            rst = (s * t).reciprocal()
-            Urr = (s + Vii) * rst
-            Uii = (s + Vrr) * rst
-            Uri = (- Vri) * rst
-
-            #
-            # Optionally left-multiply U by affine weights W to produce combined
-            # weights Z, left-multiply the inputs by Z, then optionally bias them.
-            #
-            # y = Zx + B
-            # y = WUx + B
-            # y = [Wrr Wri][Urr Uri] [xr] + [Br]
-            #     [Wir Wii][Uir Uii] [xi]   [Bi]
-            #
-            if self.affine:
-                Wrr, Wri, Wii = self.Wrr.view(vdim), self.Wri.view(vdim), self.Wii.view(vdim)
-                Zrr = (Wrr * Urr) + (Wri * Uri)
-                Zri = (Wrr * Uri) + (Wri * Uii)
-                Zir = (Wri * Urr) + (Wii * Uri)
-                Zii = (Wri * Uri) + (Wii * Uii)
-            else:
-                Zrr, Zri, Zir, Zii = Urr, Uri, Uri, Uii
-
-            yr = (Zrr * xr) + (Zri * xi)
-            yi = (Zir * xr) + (Zii * xi)
-
-            if self.affine:
-                yr = yr + self.Br.view(vdim)
-                yi = yi + self.Bi.view(vdim)
-
-            outputs = torch.cat([yr, yi], self.complex_axis)
-            return outputs
-
-        def extra_repr(self):
-            return '{num_features}, eps={eps}, momentum={momentum}, affine={affine}, ' \
-                   'track_running_stats={track_running_stats}'.format(**self.__dict__)
-
-
+    def extra_repr(self):
+        return '{num_features}, eps={eps}, momentum={momentum}, affine={affine}, ' \
+               'track_running_stats={track_running_stats}'.format(**self.__dict__)

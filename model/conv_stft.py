@@ -55,6 +55,7 @@ class ConvSTFT(nn.Module):
         self.dim = self.fft_len
 
     def forward(self, inputs):
+
         if inputs.dim() == 2:
             inputs = torch.unsqueeze(inputs, 1)
         inputs = F.pad(inputs, [self.win_len - self.stride, self.win_len - self.stride])
