@@ -63,3 +63,9 @@ class MAELoss(nn.Module):
         batch, dim, time = x.shape
 
         return torch.mean(torch.abs(x - target_spec)) * dim
+
+if __name__ == "__main__":
+    a = SISNRLoss().cuda()
+    b = torch.randn(2,165000)
+    c = torch.randn(2,165000)
+    print(a(b,c))

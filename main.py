@@ -286,7 +286,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 torch.save({
                     'epoch': epoch + 1,
                     'PESQ': best_PESQ,
-                    'model': model.state_dict(),
+                    'model': model.module.state_dict(),
                     'optimizer': optimizer.state_dict()
                 }, "saved_models/checkpoint_%d.pth" % (epoch + 1))
             best_PESQ = PESQ
@@ -311,12 +311,14 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, n_fft, ho
         loss.backward()
         optimizer.step()
 
-        if i % args.print_freq == 0:
+        if i % 20 ==0:
             niter = epoch * len(train_loader) + i
-            print(get_lr(optimizer))
-            print(" Epoch [%d][%d/%d] | loss: %f" % (epoch + 1, i, len(train_loader), loss))
             summary.add_scalar('Train/Loss', loss.item(), niter)
             summary.add_scalar('Train/lr', get_lr(optimizer), niter)
+
+        if i % args.print_freq == 0:
+            print(get_lr(optimizer))
+            print(" Epoch [%d][%d/%d] | loss: %f" % (epoch + 1, i, len(train_loader), loss))
 
     scheduler.step()
     elapse = datetime.timedelta(seconds=time.time() - end)

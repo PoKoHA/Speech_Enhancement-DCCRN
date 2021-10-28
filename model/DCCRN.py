@@ -109,8 +109,8 @@ class DCCRN(nn.Module):
         fix = True
         self.fix = fix
 
-        self.stft = ConvSTFT(self.win_len, self.win_inc, fft_len, self.win_type, 'complex', fix=fix).cuda(self.args.gpu)
-        self.istft = ConviSTFT(self.win_len, self.win_inc, fft_len, self.win_type, 'complex', fix=fix).cuda(self.args.gpu)
+        self.stft = ConvSTFT(self.win_len, self.win_inc, fft_len, self.win_type, 'complex', fix=fix)
+        self.istft = ConviSTFT(self.win_len, self.win_inc, fft_len, self.win_type, 'complex', fix=fix)
 
         self.encoder = nn.ModuleList().cuda(self.args.gpu)
         self.decoder = nn.ModuleList().cuda(self.args.gpu)
@@ -281,9 +281,10 @@ class DCCRN(nn.Module):
         out_wav = self.istft(out_spec)
         # print("out_wav", out_wav.size())
 
-        out_wav = torch.squeeze(out_wav, 1)
+        # out_wav = torch.squeeze(out_wav, 1)
         out_wav = torch.clamp_(out_wav, -1, 1)
-
+        # print(out_wav.size())
+        # print(specs.size())
         return out_spec, out_wav
 
 
@@ -315,6 +316,7 @@ def display_spectrogram(x, title):
 
 if __name__ == "__main__":
     a = torch.randn(2, 1, 165000).cuda()
-    # m = set_model()
+    m = set_model("a")
+    print(m(a))
 
 
