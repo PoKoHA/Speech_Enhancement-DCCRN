@@ -6,7 +6,7 @@ import torchaudio
 from pypesq import pesq
 
 
-def pesq_score(model, dataloader, criterion, args):
+def pesq_score(model, dataloader, criterion, args, n_fft, hop_length, summary, epoch):
     model.eval()
     test_pesq = 0.
     total_loss = 0
@@ -20,10 +20,12 @@ def pesq_score(model, dataloader, criterion, args):
             spec, wav = model(mixed) # time domain
             # print(pred_x)
             loss = criterion(wav, target)
-            total_loss += loss.item()
-
+            # total_loss += loss.item()
+            niter = epoch * len(dataloader) + i
+            summary.add_scalar('Valid/loss', loss.item(), niter)
             # PESQ score 구하기
-            target = torch.squeeze(target, 1)
+            target = torch.squeeze(target, 1)  # [batch, 1539, 214, 2]
+            wav = torch.squeeze(wav, 1)
 
             psq = 0.
             nan = 0
@@ -56,5 +58,6 @@ def pesq_score(model, dataloader, criterion, args):
         # print(len(dataloader) - total_nan)
         test_pesq /= (len(dataloader) - total_nan)
         loss_avg = total_loss / len(dataloader)
+        summary.add_scalar('Valid/pesq', test_pesq, epoch)
 
-    return test_pesq, loss_avg
+    return test_pesq

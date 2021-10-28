@@ -2,3 +2,5 @@ dataset
 .gitignore
 .idea
 __pycache__
+test
+output

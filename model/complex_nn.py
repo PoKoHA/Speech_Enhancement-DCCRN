@@ -150,9 +150,13 @@ class cConv2d(nn.Module):
 
     def forward(self, inputs):
         if self.padding[1] != 0 and self.causal: # todo time padding 이 있고 인과시스템일 경우
+            # print("1")
+            # print("A",inputs.size())
             inputs = F.pad(inputs, [self.padding[1], 0, 0, 0])
+            # print("B", inputs.size())
             # F.pad(left, right, top, bottom)
         else:
+            # print("2")
             inputs = F.pad(inputs, [self.padding[1], self.padding[0], 0, 0])
 
         if self.complex_axis == 0:
@@ -164,6 +168,7 @@ class cConv2d(nn.Module):
             real2imag, imag2imag = torch.chunk(imag, 2, self.complex_axis)
         else:
             if isinstance(inputs, torch.Tensor):
+                # print("3")
                 real, imag = torch.chunk(inputs, 2, self.complex_axis)
 
             real2real = self.real_conv(real, )
@@ -229,9 +234,13 @@ class cConvTranspose2d(nn.Module):
 
         else:
             if isinstance(inputs, torch.Tensor):
+                # print("hhhhhhh")
                 real, imag = torch.chunk(inputs, 2, self.complex_axis)
+                # print("rrrrreal", real.size())
 
             real2real = self.real_conv(real, )
+            # print("rrrrreal", real2real.size())
+
             imag2imag = self.imag_conv(imag, )
 
             real2imag = self.imag_conv(real)

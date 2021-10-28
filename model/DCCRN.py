@@ -4,6 +4,8 @@ import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import librosa
+import matplotlib.pyplot as plt
 
 from model.conv_stft import ConvSTFT, ConviSTFT
 from model.complex_nn import *
@@ -64,6 +66,7 @@ class DecoderBlock(nn.Module):
 
         return output
 
+
 class DCCRN(nn.Module):
 
     def __init__(
@@ -122,11 +125,10 @@ class DCCRN(nn.Module):
                 stride=(2, 1),
                 padding=(2, 1)
             ))
-
         # Bridge part
         # todo
         hidden_dim = self.fft_len // (2 ** (len(self.kernel_num)))
-
+        # print(self.encoder)
         # Complex LSTM 사용 or Real LSTM(그냥 LSTM)
         if self.use_clstm:
             rnns = []
@@ -154,7 +156,7 @@ class DCCRN(nn.Module):
                 batch_first=False
             ).cuda(self.args.gpu)
             self.projection = nn.Linear(self.rnn_dim * fac, hidden_dim * self.kernel_num[-1]).cuda(self.args.gpu)
-
+        # print(self.enhance)
         # Decoder Part
         for idx in range(len(self.kernel_num) - 1, 0, -1):
             if idx != 1: # last decoder 아니라면
@@ -178,7 +180,7 @@ class DCCRN(nn.Module):
                     padding=(2, 0),
                     output_padding=(1, 0)
                 ))
-
+        # print(self.decoder)
         self.flatten_parameters() # todo ??
 
     def flatten_parameters(self):
@@ -188,7 +190,9 @@ class DCCRN(nn.Module):
     def forward(self, inputs, lens=None):
         # print("input: ", inputs.size())
         specs = self.stft(inputs)
-        # print("specs: ", specs.size())
+        # print("specs: ", specs.size()) # [1, 512, 1653]
+        # a = librosa.amplitude_to_db(specs.cpu().detach().numpy())
+        # display_spectrogram(a,"d")
         real = specs[:, :self.fft_len//2+1]
         imag = specs[:, self.fft_len//2+1:]
 
@@ -196,35 +200,38 @@ class DCCRN(nn.Module):
         spec_phase = torch.atan2(imag, real)
 
         complexSpec = torch.stack([real, imag], 1)
+        # print("1", complexSpec.size())
         complexSpec = complexSpec[:, :, 1:] # todo 왜 처음꺼 빼는지
+        # print("2", complexSpec.size())
 
         out = complexSpec # todo 사실상 input?
         # print("out: ", out.size())
         encoder_out = []
-
+        # print("encodier_ input", out.size())
         for idx, encoder in enumerate(self.encoder):
             out = encoder(out)
+            # print("encoder", idx, " ", out.size())
             encoder_out.append(out) # U-net skip connection
 
         batch_size, channels, dims, lengths = out.size()
         out = out.permute(3, 0, 1, 2)
         # [B, C, D, L] ==> [L, B, C, D] for RNN
-
+        # print("resape", out.size())
         if self.use_clstm: # complex lstm 사용 시
             # DCUnet 했을 때와 비슷
             real_rnn_input = out[:, :, :channels//2]
             imag_rnn_input = out[:, :, channels//2:]
-
+            # print("lstm_1", real_rnn_input.size())
             real_rnn_input = torch.reshape(real_rnn_input, [lengths, batch_size, channels//2*dims])
             imag_rnn_input = torch.reshape(imag_rnn_input, [lengths, batch_size, channels//2*dims])
-
+            # print("lstm_2", real_rnn_input.size())
             real_rnn_output, imag_rnn_output = self.enhance([real_rnn_input, imag_rnn_input])
-
+            # print("lstm_3", real_rnn_output.size())
             real_rnn_output = torch.reshape(real_rnn_output, [lengths, batch_size, channels//2, dims])
             imag_rnn_output = torch.reshape(imag_rnn_output, [lengths, batch_size, channels//2, dims])
-
+            # print("lstm_4", real_rnn_output.size())
             out = torch.cat([real_rnn_output, imag_rnn_output], 2)
-
+            # print("lstm_5", out.size())
         else: # complex lstm 사용 안함
             rnn_input = torch.reshape(out, [lengths, batch_size, channels*dims])
             rnn_output, _ = self.enhance(rnn_input)
@@ -232,10 +239,13 @@ class DCCRN(nn.Module):
             out = torch.reshape(projection, [lengths, batch_size, channels, dims])
 
         out = out.permute(1, 2, 3, 0)
+        # print("reshape", out.size())
 
         for idx in range(len(self.decoder)):
             out = complex_cat([out, encoder_out[-1 - idx]], 1) # encoder 뒤에서부터 concat Unet 형태 참고
+            # print("de i", out.size())
             out = self.decoder[idx](out)
+            # print("de out", out.size())
             out = out[..., 1:] # todo 처음꺼 안쓰는 이유
 
         mask_real = out[:, 0]
@@ -296,8 +306,15 @@ def set_model(args, mode='CL'):
 
     return model
 
+def display_spectrogram(x, title):
+    plt.figure(figsize=(15, 10))
+    plt.pcolormesh(x[0], cmap='hot')
+    plt.colorbar(format="%+2.f dB")
+    plt.title(title)
+    plt.show()
 
-
-
+if __name__ == "__main__":
+    a = torch.randn(2, 1, 165000).cuda()
+    # m = set_model()
 
 

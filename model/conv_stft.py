@@ -49,6 +49,7 @@ class ConvSTFT(nn.Module):
         kernel, _ = init_kernels(win_len, win_inc, self.fft_len, win_type)
         # self.weight = nn.Parameter(kernel, requires_grad=(not fix))
         self.register_buffer('weight', kernel)
+        # print(kernel.size())
         self.feature_type = feature_type
         self.stride = win_inc
         self.win_len = win_len
@@ -59,6 +60,8 @@ class ConvSTFT(nn.Module):
         if inputs.dim() == 2:
             inputs = torch.unsqueeze(inputs, 1)
         inputs = F.pad(inputs, [self.win_len - self.stride, self.win_len - self.stride])
+        # print("A",self.weight.size())
+        # print("B",self.stride)
         outputs = F.conv1d(inputs, self.weight, stride=self.stride)
 
         if self.feature_type == 'complex':
@@ -112,3 +115,8 @@ class ConviSTFT(nn.Module):
         outputs = outputs[..., self.win_len - self.stride:-(self.win_len - self.stride)]
 
         return outputs
+
+if __name__ == "__main__":
+    a = ConvSTFT(400 ,100 ,512,'hanning', 'complex')
+    b= torch.randn(1, 1, 165000)
+    a(b)
