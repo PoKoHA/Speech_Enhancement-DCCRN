@@ -3,7 +3,8 @@ import numpy as np
 
 import torch
 import torchaudio
-from pypesq import pesq
+# from pypesq import pesq
+from pesq import pesq
 
 
 def pesq_score(model, dataloader, criterion, args, n_fft, hop_length, summary, epoch):
@@ -40,7 +41,8 @@ def pesq_score(model, dataloader, criterion, args, n_fft, hop_length, summary, e
                 # print("A", clean_x_16.flatten().size)
                 # print("B", pred_x_16.flatten().shape)
                 # print("i", i, "idx:", idx)
-                score = pesq(clean_x_16.flatten(), pred_x_16.flatten(), 16000)
+                # score = pesq(clean_x_16.flatten(), pred_x_16.flatten(), 16000)
+                score = pesq(fs=16000, ref=clean_x_16.flatten(), deg=pred_x_16.flatten(), mode='wb')
 
                 if np.isnan(score):
                     nan += 1
